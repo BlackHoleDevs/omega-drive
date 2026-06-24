@@ -11,12 +11,21 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+
+    - name: Set up Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        cache: true
+
+    - name: Build (CPU-only)
+      run: cargo build --verbose --no-default-features
+      working-directory: omega
+
+    - name: Run tests (CPU-only)
+      run: cargo test --verbose --no-default-features
+      working-directory: omega
