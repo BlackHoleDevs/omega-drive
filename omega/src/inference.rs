@@ -10,8 +10,10 @@ use std::arch::x86_64::*;
 use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
+#[cfg(feature = "cuda")]
 use std::sync::Arc;
 
+#[cfg(feature = "cuda")]
 const PTX: &str = include_str!("airdb_kernel.ptx");
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,7 +36,7 @@ struct GpuWeights {
 }
 
 impl McnnModel {
-    pub fn load(path: &str, device_type: Device) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(path: &str, _device_type: Device) -> Result<Self, Box<dyn std::error::Error>> {
         let mut file = File::open(path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
@@ -65,7 +67,7 @@ impl McnnModel {
         let mut gpu_weights = None;
         
         #[cfg(feature = "cuda")]
-        if let Device::Gpu | Device::Hybrid = device_type {
+        if let Device::Gpu | Device::Hybrid = _device_type {
             if let Ok(dev) = CudaDevice::new(0) {
                 if dev.load_ptx(Ptx::from_src(PTX), "airdb", &["forward_router_batch", "reconstruct_batch"]).is_ok() {
                     let w1_gpu = dev.htod_copy(router_w1.clone())?;
