@@ -257,10 +257,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn handle_connection<S>(mut socket: S, db: Arc<DashMap<AirKey, NeuralValue, fxhash::FxBuildHasher>>, model: Arc<McnnModel>) -> Result<(), Box<dyn std::error::Error>> 
 where S: AsyncReadExt + AsyncWriteExt + Unpin 
 {
-    let mut read_buffer = BytesMut::with_capacity(1024 * 1024 * 1024); // 1GB Buffer for Massive Blobs
-    let mut write_buffer = BytesMut::with_capacity(1024 * 1024 * 1024);
+    let mut read_buffer = BytesMut::with_capacity(65536); // 64KB initial buffer
+    let mut write_buffer = BytesMut::with_capacity(65536);
 
     loop {
+        // Ensure there is at least 4KB of remaining capacity for reading new data
+        if read_buffer.capacity() - read_buffer.len() < 4096 {
+            read_buffer.reserve(65536);
+        }
         let n = socket.read_buf(&mut read_buffer).await?;
         if n == 0 { return Ok(()); }
         let mut pos = 0;
