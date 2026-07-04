@@ -1,80 +1,121 @@
-# 🚀 Omega Drive 3.0 — Hybrid Neural Caching & Database Accelerator
+# 🚀 OmegaDrive: Hybrid Neural Caching & Vector Search Accelerator
 
 [![Language: Rust](https://img.shields.io/badge/Language-Rust-orange.svg?logo=rust&style=flat-square)](https://www.rust-lang.org)
 [![License: MIT / Apache 2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache%202.0-blue.svg?style=flat-square)](LICENSE.md)
 [![Build: Passing](https://img.shields.io/badge/Build-Passing-green.svg?style=flat-square)](#)
-[![Security: Neural DNA](https://img.shields.io/badge/Security-Neural%20DNA-red.svg?logo=keycdn&logoColor=white&style=flat-square)](#%EF%B8%8F-neural-cryptography--dna-tampering)
+[![Performance: 597K+ RPS](https://img.shields.io/badge/Performance-597K%20RPS-brightgreen.svg?logo=speedtest&logoColor=white&style=flat-square)](#-key-performance-benchmarks)
+[![Vector Search: 1M Scale](https://img.shields.io/badge/Vector%20Search-1M%20Scale-blue.svg?logo=vector&style=flat-square)](#-hybrid-vector-search-engine)
 
-Welcome to the official release of **Omega Drive 3.0 (Open Source Edition)**. 
+OmegaDrive is a next-generation, high-performance hybrid memory database and vector search engine written from scratch in highly optimized **Rust** 🦀. Fully compatible with the standard **Redis (RESP)** protocol, OmegaDrive acts as a drop-in database replacement, zero-latency caching accelerator, and ultra-fast vector retrieval engine.
 
-Omega Drive is a state-of-the-art, high-performance hybrid database accelerator and intelligent cache engine. Engineered from the ground up in highly optimized Rust 🦀, Omega Drive combines raw multi-threaded networking with a built-in **Multi-Channel Neural Network (MCNN)** routing cortex to achieve unmatched data-access latency and cryptographic safety.
+Through a **Shared-Nothing architecture**, CPU-bound SIMD vectorization, and a kernel-space load balancer, OmegaDrive breaks free from the single-threaded bottlenecks of traditional databases to achieve unmatched raw performance and efficiency.
+
+---
+
+## 🧬 Architectural Overview
+
+OmegaDrive is built around three core design principles to maximize hardware saturation:
+1. **Shared-Nothing Worker Model:** Rather than relying on a global thread pool or lock manager (which causes CPU cache bouncing and thread lock contention), each CPU core runs its own isolated, single-threaded runtime.
+2. **Kernel-Space Load Balancing (`SO_REUSEPORT`):** Inbound TCP/UDS connections are load-balanced at the kernel level directly to the worker event loops, bypassing acceptor bottlenecks.
+3. **Contiguous Memory bitstreams:** Keys, Redis Hashes, and Vector embeddings are stored in flat, contiguous memory layouts (`Vec<u8>`, `Vec<f32>`, `Vec<u64>`) to maximize L1/L2 cache prefetching and enable zero-heap-allocation network streaming.
+
+```mermaid
+graph TD
+    Client[Client Connections] -->|SO_REUSEPORT Load Balancing| Kernel[Linux Kernel Socket Listener]
+    Kernel --> Worker0[Worker Core 0]
+    Kernel --> Worker1[Worker Core 1]
+    Kernel --> WorkerN[Worker Core N]
+    
+    subgraph Shared-Nothing Workers
+        Worker0 -->|Event Loop| RESP0[RESP Parser]
+        Worker1 -->|Event Loop| RESP1[RESP Parser]
+        WorkerN -->|Event Loop| RESPn[RESP Parser]
+    end
+    
+    RESP0 --> FlatMemory[Flat Contiguous Memory Store]
+    RESP1 --> FlatMemory
+    RESPn --> FlatMemory
+    
+    subgraph Memory Architecture
+        FlatMemory --> HashStore[Flat Key-Value Hash Engine]
+        FlatMemory --> CryptEngine[AVX2 Neural Cryptography Cascade]
+        FlatMemory --> VectorStore[Hybrid 1-bit + Float Vector Engine]
+    end
+```
 
 ---
 
 ## ⚡ Key Features
 
-* **Hybrid Neural Architecture:** Integrates a neural network routing cortex directly into the memory path, allowing zero-overhead expert selection and intelligent predictive indexing.
-* **Extreme Throughput:** Engineered for absolute performance with support for AVX2 instructions, native Linux epoll via Tokio, and optional CUDA-accelerated batch operations, comfortably surpassing **43.5K+ requests per second** with sub-millisecond latencies.
-* **Native Redis Protocol compatibility:** Fully compliant with standard RESP protocol semantics, acting as a drop-in replacement or real-time caching layer for existing Redis/Memcached infrastructures.
-* **Integrated WebSocket pub/sub Streaming:** Built-in high-speed WebSocket broadcast server running on port `8082` for real-time reactive updates directly to web applications (such as our WooCommerce next-gen accelerators).
-
-
----
-
-## ⚖️ Open Source License & Reference Benchmarks
-
-This release (`v1.0.0`) is the **Open Source Edition** of Omega Drive. 
-
-* **Active Workers:** Automatically scales to all available CPU cores.
-* **Redistribution:** Granted under your choice of either the MIT License or the Apache 2.0 License for both commercial and non-commercial usage.
-* **Weights File:** Powered by the open `logic_gate.omm` database weights file.
-
-### 💻 Reference Hardware Specifications
-All high-throughput caching and reverse-proxy benchmarks (achieving **43.5K+ requests/sec** for reverse-proxy cache and **13.4M+ operations/sec** for raw Unix Domain Sockets) were conducted and verified locally under a non-commercial environment on the following reference machine:
-* **System Model:** Micro-Star International Co., Ltd. WS66 10TKT Notebook
-* **OS:** Linux Ubuntu 22.04 LTS (x86_64)
-* **Processor:** Intel® Core™ i7-10875H CPU @ 2.30GHz × 16 threads
-* **Memory:** 32GB Dual-Channel High-Speed DDR4 RAM
+* **High-Throughput memtier Benchmarks:** Reaches over **597,000 requests per second** under high concurrency—outperforming Redis and KeyDB by up to **2.92x**.
+* **RESP Protocol Compatibility:** Drop-in support for Redis client libraries (`redis-py`, `node-redis`, `redis-cli`, etc.).
+* **Dynamic Neural Cascade Cipher:** double-layer cryptographic protection (ChaCha20 + Neural XOR) processed at AVX2 instruction levels, providing wire-speed security.
+* **Hybrid Vector Search:** Optimized vector database combining **1-bit Sign Quantization (SRP)** Hamming filter with **AVX2-unrolled Float Reranking**, maintaining **100% recall** at 1,000,000 vectors with **15x speedups**.
+* **High-Speed WebSocket Pub/Sub:** Real-time push gateway on port `8082` featuring AVX2 SIMD demasking (up to **15.8x faster** demasking).
 
 ---
 
-## ⚙️ Quick Start
+## 🏎️ Key Performance Benchmarks
 
-To launch and run the Omega Drive accelerator on a Linux terminal:
+All benchmarks were executed on an AMD Ryzen/Intel reference machine running Ubuntu 24.04. See [benchmarks.md](benchmarks.md) for full reproduction commands and configurations.
 
-### 1. Prepare the Neural Weights
-The database engine requires a neural database weights file named `logic_gate.omm` in its working directory, which is an open-format weights database for the neural engine. Users can generate their own weights or use community-provided models, ensuring full transparency of the engine's decision-making process. 
+### 1. High Concurrency Showdown (`memtier_benchmark`)
+*Profile: 8 Threads, 32 Connections/Thread (256 clients), 1:1 SET/GET ratio.*
 
-### 2. Launch the Accelerator
-Run the pre-compiled `omega` server binary:
+* **Redis v7.2:** `204,261 ops/sec` | Avg. Latency: `1.25 ms`
+* **KeyDB v6.3:** `196,037 ops/sec` | Avg. Latency: `1.30 ms`
+* **OmegaDrive:** **`597,474 ops/sec` 🚀** | Avg. Latency: **`0.45 ms` ⚡**
+
+### 2. YCSB Workload B (95% Reads, 5% Updates)
+*Profile: 12 Threads, 50,000 Transactions.*
+
+* **KeyDB:** `94,876 ops/sec` | READ Avg. Latency: `114.4 μs`
+* **Redis:** `104,602 ops/sec` | READ Avg. Latency: `105.8 μs`
+* **OmegaDrive:** **`156,739 ops/sec` 🔥** | READ Avg. Latency: **`55.9 μs` ⚡**
+
+### 3. Vector Scaling Speedup (1536 Dimensions)
+*Profile: Average latency for 100 queries.*
+
+* **100,000 Vectors:** Standard Float scan `34.47 ms` vs Omega Reranked **`2.00 ms`** (**17.24x Speedup**, **100% Recall**)
+* **1,000,000 Vectors:** Standard Float scan `328.40 ms` vs Omega Reranked **`21.66 ms`** (**15.16x Speedup**, **100% Recall**)
+
+---
+
+## ⚙️ Building & Running
+
+### 1. Compile from Source
+To enable AVX2, FMA, and CPU-level hardware vectorization, compile with `target-cpu=native`:
 
 ```bash
-# Start in the foreground
-./omega
-
-# Start binding to a custom port and address
-./omega --port 6380 --bind 127.0.0.1
+RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-### 3. Verify the Startup Status
-Upon launching, the engine will initialize:
+### 2. Start the Server
+OmegaDrive requires the neural database weights file `logic_gate.omm` in its active working directory to successfully pass the Neural Integrity Handshake.
 
+```bash
+# Start in the foreground on default port 6380
+./target/release/omega
+
+# Start binding to all interfaces and custom Unix Domain Socket
+./target/release/omega --bind 0.0.0.0 --port 6380 --unixsocket /tmp/omega.sock --daemonize yes
+```
+
+Upon launching, the engine outputs the verified handshake:
 ```text
 🚀 OMEGA DRIVE 3.0 - HYBRID NEURAL GATEWAY
-🧬 Active: 16/16 Workers [UNLIMITED PERFORMANCE TIER]
+🧬 Neural License Verified | Active: 16/16 Workers [UNLIMITED PERFORMANCE TIER]
 🌐 Worker 0 online
-🌐 Worker 1 online
 ...
-🚀 [ACCELERATOR] WebSocket Pub/Sub Server active on ws://0.0.0.0:8082 [License Bounds: 16 Cores]
+🌐 Worker 15 online
+🚀 [ACCELERATOR] WebSocket Pub/Sub Server active on ws://127.0.0.1:8082
 ```
 
 ---
 
-## 📡 Command Line Options
+## 📡 Command Line Arguments
 
-Customize the daemon's behavior by passing the following flags:
-
-| Flag | Shorthand | Description | Default |
+| Argument | Shorthand | Description | Default |
 | :--- | :--- | :--- | :--- |
 | `--port` | `-p` | TCP Port to bind the database server to | `6380` |
 | `--bind` | | Interface IP address to bind | `127.0.0.1` |
@@ -84,125 +125,91 @@ Customize the daemon's behavior by passing the following flags:
 | `--device` | `-d` | Target compute hardware (`cpu`, `gpu`, or `hybrid`) | `cpu` |
 | `--unixsocket`| | Bind to a local Unix Domain Socket (for zero-latency IPC) | *None* |
 
-> [!WARNING]
-> **Experimental GPU Acceleration (`--device gpu` / `hybrid`):** The GPU compute feature is strictly **experimental** in this release. Please note that it **cannot be used on standard Virtual Private Servers (VPS)**. VPS instances generally lack physical GPU passthrough and CUDA driver support, which will cause initialization errors. Use the default `cpu` mode for all standard cloud and VPS deployments.
-
 ---
 
-## 💻 Connecting a Client
+## 💻 Code Examples
 
-Because Omega Drive is fully compatible with the standard Redis protocol, you can use any standard client library to perform hyper-fast operations:
-
-### Shell (redis-cli)
-```bash
-redis-cli -p 6380 PING
-# Output: PONG
-```
-
-### Python (Single Keys)
-```python
-import redis
-
-# Connect to Omega Drive Accelerator
-client = redis.Redis(host='127.0.0.1', port=6380)
-
-# Set a neural cache value (uses cryptographic cascade path)
-client.set('greeting', 'Hello from Omega Drive!')
-
-# Get the decrypted value
-print(client.get('greeting').decode('utf-8'))
-```
-
-### Python (Bulk MSET / MGET Acceleration)
-For massive datasets and high-volume pipelines, Omega Drive features a specialized **Raw Neural Expert path** for bulk operations. By bypassing the Cascade Cryptography layer, `MSET` and `MGET` achieve absolute hardware saturation and maximum raw throughput:
+### 1. Connecting via Standard Redis Client (Python)
+Because OmegaDrive implements standard RESP protocol parsing, it acts as a drop-in replacement:
 
 ```python
 import redis
 
+# Connect to OmegaDrive over loopback port
 client = redis.Redis(host='127.0.0.1', port=6380)
 
-# 1. Bulk write via MSET (Fast Neural Expert path)
-bulk_data = {
-    f"sensor_node_{i}": f"telemetry_data_chunk_payload_{i * 99}"
-    for i in range(100)
-}
-client.mset(bulk_data)
-print("✅ Successfully stored 100 bulk chunks via MSET!")
+# Set a key (stored securely in flat memory layout)
+client.set('db_mode', 'unlimited_open_source')
 
-# 2. Bulk read via MGET
-keys = [f"sensor_node_{i}" for i in range(5)]
-results = client.mget(keys)
-
-for k, v in zip(keys, results):
-    print(f"📡 {k} -> {v.decode('utf-8') if v else 'None'}")
+# Retrieve the key
+print(client.get('db_mode').decode('utf-8'))
+# Output: unlimited_open_source
 ```
 
----
+### 2. Native Vector Search Commands (VADD & VSEARCH)
+OmegaDrive features native vector database commands (`VADD` and `VSEARCH`). Vectors are automatically quantized to 1-bit representation internally, while the raw floats are stored for exact dot-product reranking.
 
-## 🌐 WebSocket Pub/Sub Gateway
+#### VADD Syntax
+```text
+VADD <key> <float_1> <float_2> ... <float_dim>
+```
+*Adds the vector to the database. Returns `+OK`.*
 
-Omega Drive features an integrated high-performance WebSocket broadcaster that streams real-time updates of key modifications directly to web frontends or streaming consumers.
+#### VSEARCH Syntax
+```text
+VSEARCH <top_k> <float_1> <float_2> ... <float_dim>
+```
+*Searches the database using Coarse Filtering + Exact Float Reranking. Returns a flat RESP Array of `[key_1, score_1 * 10000, key_2, score_2 * 10000, ...]`.*
 
-By default, it listens on port `8082`.
+#### Client Example (Python)
+```python
+import redis
+import random
 
-### Protocol Specification
+client = redis.Redis(host='127.0.0.1', port=6380)
 
-To subscribe to a key, establish a WebSocket connection and send a JSON subscription request:
+# 1. Insert two high-dimensional vectors (e.g. dimension 1536)
+vec_a = [random.uniform(-1.0, 1.0) for _ in range(1536)]
+vec_b = [random.uniform(-1.0, 1.0) for _ in range(1536)]
 
-```json
-{
-  "action": "subscribe",
-  "key": "sensor_node_0"
-}
+client.execute_command("VADD", "embedding_node_a", *vec_a)
+client.execute_command("VADD", "embedding_node_b", *vec_b)
+print("✅ Vector nodes inserted!")
+
+# 2. Perform a nearest-neighbor VSEARCH (k=2)
+query_vec = [random.uniform(-1.0, 1.0) for _ in range(1536)]
+results = client.execute_command("VSEARCH", 2, *query_vec)
+
+# Process results
+# Flat array returned: [b'key_1', score_1, b'key_2', score_2]
+for i in range(0, len(results), 2):
+    key = results[i].decode('utf-8')
+    score = results[i+1] / 10000.0
+    print(f"🎯 Match {i//2 + 1}: {key} (Cosine Similarity Score: {score:.4f})")
 ```
 
-You will receive a confirmation message:
-
-```json
-{"status":"subscribed","key":"sensor_node_0"}
-```
-
-Whenever a database client executes a `SET` command on the subscribed key, the new value is immediately pushed in real-time as a **binary WebSocket message** to all subscribers.
-
-### JavaScript Integration Example (Browser)
+### 3. Subscribing to the WebSocket Broadcast Gateway
+For real-time data streaming and WooCommerce/Next.js reactivity:
 
 ```javascript
-const socket = new WebSocket("ws://127.0.0.1:8082");
+const WebSocket = require('ws');
 
-socket.onopen = () => {
-    // Subscribe to live updates for sensor_node_0
-    socket.send(JSON.stringify({ action: "subscribe", key: "sensor_node_0" }));
-    console.log("Subscription request sent!");
-};
+// Connect to the WebSocket Pub/Sub port
+const ws = new WebSocket('ws://127.0.0.1:8082');
 
-socket.onmessage = async (event) => {
-    if (event.data instanceof Blob) {
-        const buffer = await event.data.arrayBuffer();
-        const payload = new Uint8Array(buffer);
-        console.log("📡 Real-time update payload received:", payload);
-    } else {
-        console.log("💬 Server message:", event.data);
-    }
-};
+ws.on('open', () => {
+  console.log('Connected to OmegaDrive real-time gateway!');
+  // Subscribe to channel
+  ws.send(JSON.stringify({ action: 'SUBSCRIBE', channel: 'telemetry_stream' }));
+});
+
+ws.on('message', (data) => {
+  console.log('Received telemetry update:', JSON.parse(data));
+});
 ```
 
 ---
 
-## 🔒 Security & Resilience
+## ⚖️ Open Source License
 
-* **Memory Safety First:** Engineered entirely in Rust 🦀, Omega Drive benefits from native compile-time memory safety, eliminating common vulnerabilities such as buffer overflows, dangling pointers, and use-after-free conditions.
-* **EU Cyber Resilience Act (CRA) Alignment:** The project prioritizes software supply chain security aligned with the principles of the EU Cyber Resilience Act, prioritizing memory safety and supply-chain integrity.
-* **Automated Fuzzing:** We utilize automated fuzzing to ensure resilience against malformed inputs.
-* **Cryptographic Isolation:** Standard database accesses use secure cascade cryptography initialized dynamically from expert neuron weight layers, isolating payloads against side-channel analysis.
-
----
-
-## 🤝 Governance & Contribution
-
-* **Transparent Open Source:** Omega Drive is managed as a transparent open-source initiative.
-* **Community Audited:** All security patches and bug reports are welcome via Pull Requests.
-* **Zero-Warning Goal:** We make every effort to maintain the code in a "zero-warning" state using clippy and cargo audit tools.
-
----
-
-*Omega Drive is open-source software dual-licensed under the MIT License and the Apache License, Version 2.0.*
+OmegaDrive is open-source software dual-licensed under the **MIT License** and the **Apache License, Version 2.0**.

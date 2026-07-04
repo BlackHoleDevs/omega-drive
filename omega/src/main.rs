@@ -3,6 +3,8 @@ mod resp;
 mod telemetry;
 mod accelerator;
 mod hash_engine;
+mod vector_store;
+mod ws_opt;
 use dashmap::DashMap;
 use inference::{McnnModel, Device};
 use resp::{Command, parse_command_fast, make_pong, make_int, make_bulk_string};
@@ -62,7 +64,7 @@ impl AirKey {
             AirKey::Boxed(Box::from(bytes))
         }
     }
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         match self {
             AirKey::Inline(data, len) => &data[..*len as usize],
             AirKey::Boxed(b) => b,
@@ -117,10 +119,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let total_cores = num_cpus::get();
-    let num_workers = args.workers.unwrap_or(total_cores).min(total_cores);
+    let limit = model_base.worker_limit;
+    let num_workers = args.workers.unwrap_or(total_cores).min(limit).min(total_cores);
 
     println!("🚀 OMEGA DRIVE 3.0 - HYBRID NEURAL GATEWAY");
-    println!("🧬 Active: {}/{} Workers [UNLIMITED PERFORMANCE TIER]", num_workers, total_cores);
+    if limit == 2 {
+        println!("🧬 Neural License Verified | Active: {}/{} Workers [LITE TIER - 2 Cores Bound]", num_workers, total_cores);
+    } else if limit == 4 {
+        println!("🧬 Neural License Verified | Active: {}/{} Workers [PAY-AS-YOU-WANT TIER - 4 Cores Bound]", num_workers, total_cores);
+    } else if limit == 8 {
+        println!("🧬 Neural License Verified | Active: {}/{} Workers [PAY-AS-YOU-WANT TIER - 8 Cores Bound]", num_workers, total_cores);
+    } else {
+        println!("🧬 Neural License Verified | Active: {}/{} Workers [UNLIMITED PERFORMANCE TIER]", num_workers, total_cores);
+    }
 
     #[cfg(unix)]
     if args.daemonize == "yes" {
@@ -151,6 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut threads = Vec::new();
     let global_db = Arc::new(DashMap::with_capacity_and_hasher_and_shard_amount(1_000_000, fxhash::FxBuildHasher::default(), 1024));
+    let vector_db = Arc::new(crate::vector_store::SharedVectorStore::new(1536));
 
     let dump_file = "omegadrive.dump";
     if std::path::Path::new(dump_file).exists() {
@@ -192,6 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         let uds_listener_clone = Arc::clone(&uds_listener_base);
         let db = Arc::clone(&global_db);
+        let vector_db_clone = Arc::clone(&vector_db);
         
         threads.push(std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -217,19 +230,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 let db_for_tcp = Arc::clone(&db);
                 let model_for_tcp = Arc::clone(&model);
+                let vector_db_for_tcp = Arc::clone(&vector_db_clone);
 
                 #[cfg(unix)]
                 {
                     let db_for_uds = Arc::clone(&db);
                     let model_for_uds = Arc::clone(&model);
+                    let vector_db_for_uds = Arc::clone(&vector_db_clone);
 
                     tokio::spawn(async move {
                         loop {
                             if let Ok((s, _)) = uds_listener.accept().await {
                                 let local_db = Arc::clone(&db_for_uds);
                                 let local_model = Arc::clone(&model_for_uds);
+                                let local_vector_db = Arc::clone(&vector_db_for_uds);
                                 tokio::spawn(async move {
-                                    let _ = handle_connection(s, local_db, local_model).await;
+                                    let _ = handle_connection(s, local_db, local_model, local_vector_db).await;
                                 });
                             }
                         }
@@ -241,8 +257,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = s.set_nodelay(true);
                         let local_db = Arc::clone(&db_for_tcp);
                         let local_model = Arc::clone(&model_for_tcp);
+                        let local_vector_db = Arc::clone(&vector_db_for_tcp);
                         tokio::spawn(async move {
-                            let _ = handle_connection(s, local_db, local_model).await;
+                            let _ = handle_connection(s, local_db, local_model, local_vector_db).await;
                         });
                     }
                 }
@@ -254,23 +271,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_connection<S>(mut socket: S, db: Arc<DashMap<AirKey, NeuralValue, fxhash::FxBuildHasher>>, model: Arc<McnnModel>) -> Result<(), Box<dyn std::error::Error>> 
+async fn handle_connection<S>(mut socket: S, db: Arc<DashMap<AirKey, NeuralValue, fxhash::FxBuildHasher>>, model: Arc<McnnModel>, vector_db: Arc<crate::vector_store::SharedVectorStore>) -> Result<(), Box<dyn std::error::Error>> 
 where S: AsyncReadExt + AsyncWriteExt + Unpin 
 {
-    let mut read_buffer = BytesMut::with_capacity(65536); // 64KB initial buffer
-    let mut write_buffer = BytesMut::with_capacity(65536);
+    let mut read_buffer = BytesMut::with_capacity(1024 * 1024 * 1024); // 1GB Buffer for Massive Blobs
+    let mut write_buffer = BytesMut::with_capacity(1024 * 1024 * 1024);
+
+    let is_lite = model.worker_limit <= 2;
+    let mut tokens: f64 = 2000.0;
+    let mut last_refill = std::time::Instant::now();
 
     loop {
-        // Ensure there is at least 4KB of remaining capacity for reading new data
-        if read_buffer.capacity() - read_buffer.len() < 4096 {
-            read_buffer.reserve(65536);
-        }
         let n = socket.read_buf(&mut read_buffer).await?;
         if n == 0 { return Ok(()); }
         let mut pos = 0;
         while pos < read_buffer.len() {
             if read_buffer[pos] == b'*' {
                 if let Some((cmd, consumed)) = parse_command_fast(&read_buffer[pos..]) {
+                    if is_lite {
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(last_refill).as_secs_f64();
+                        last_refill = now;
+                        tokens = (tokens + elapsed * 200000.0).min(2000.0);
+                        if tokens < 1.0 {
+                            let sleep_secs = (1.0 - tokens) / 200000.0;
+                            tokio::time::sleep(std::time::Duration::from_secs_f64(sleep_secs)).await;
+                            tokens = 0.0;
+                        } else {
+                            tokens -= 1.0;
+                        }
+                    }
                     let current_pos = pos + consumed;
                     match cmd {
                         Command::Ping => { write_buffer.extend_from_slice(make_pong()); pos = current_pos; }
@@ -421,6 +451,28 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                         }
                         Command::ZAdd(_) => {
                             write_buffer.extend_from_slice(b":1\r\n");
+                            pos = current_pos;
+                        }
+                        Command::VAdd(key, floats) => {
+                            let bit_vec = vector_db.quantize(&floats);
+                            vector_db.add(AirKey::from_bytes(key.as_bytes()), bit_vec, floats);
+                            write_buffer.extend_from_slice(RESP_OK);
+                            pos = current_pos;
+                        }
+                        Command::VSearch(k, floats) => {
+                            let query_bit_vec = vector_db.quantize(&floats);
+                            let results = vector_db.search_reranked(&query_bit_vec, &floats, k);
+                            
+                            // Return flat array: [key_1, dist_1, key_2, dist_2, ...]
+                            write_buffer.extend_from_slice(format!("*{}\r\n", results.len() * 2).as_bytes());
+                            for (key, score) in results {
+                                let key_bytes = key.as_bytes();
+                                write_buffer.extend_from_slice(format!("${}\r\n", key_bytes.len()).as_bytes());
+                                write_buffer.extend_from_slice(key_bytes);
+                                write_buffer.extend_from_slice(RESP_CRLF);
+                                let dist_int = (score * 10000.0) as i32;
+                                write_buffer.extend_from_slice(format!(":{}\r\n", dist_int).as_bytes());
+                            }
                             pos = current_pos;
                         }
                         Command::Unknown(_) => {

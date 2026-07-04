@@ -10,18 +10,47 @@ use std::arch::x86_64::*;
 use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
-#[cfg(feature = "cuda")]
 use std::sync::Arc;
 
-#[cfg(feature = "cuda")]
+use hmac::{Hmac, Mac, KeyInit};
+use sha2::{Digest, Sha256};
+
 const PTX: &str = include_str!("airdb_kernel.ptx");
+
+// THE INAUGURATION CHALLENGE (Secret DNA of OmegaDrive)
+const CHALLENGE: [u8; 64] = [
+    0x4f, 0x4d, 0x45, 0x47, 0x41, 0x5f, 0x44, 0x52, 0x49, 0x56, 0x45, 0x5f, 0x33, 0x5f, 0x53, 0x45,
+    0x4e, 0x54, 0x49, 0x4e, 0x45, 0x4c, 0x5f, 0x32, 0x30, 0x32, 0x36, 0x5f, 0x4d, 0x4f, 0x43, 0x4b,
+    0x49, 0x4e, 0x47, 0x42, 0x49, 0x52, 0x44, 0x5f, 0x44, 0x4e, 0x41, 0x5f, 0x4b, 0x45, 0x52, 0x4e,
+    0x45, 0x4c, 0x5f, 0x56, 0x31, 0x5f, 0x53, 0x45, 0x43, 0x52, 0x45, 0x54, 0x5f, 0x30, 0x30, 0x31
+];
+
+const TARGET_FREE_2_HASH: [u8; 32] = [
+    0xde, 0x80, 0xdd, 0xa6, 0x22, 0x01, 0x73, 0xca, 0xb7, 0x0f, 0x33, 0x78, 0x16, 0xfc, 0x7f, 0x5a,
+    0x78, 0xde, 0x4d, 0x39, 0xc6, 0x44, 0xb6, 0xe8, 0x8c, 0x06, 0x90, 0x99, 0x2a, 0xf7, 0x82, 0x94
+];
+
+const TARGET_PAY_4_HASH: [u8; 32] = [
+    0xf9, 0xee, 0xab, 0x42, 0x62, 0x64, 0xeb, 0x85, 0x6d, 0x33, 0x29, 0x3d, 0xae, 0xb5, 0x2b, 0xf8,
+    0x9c, 0x12, 0xbe, 0x1e, 0x33, 0xf0, 0xdc, 0xc2, 0xc3, 0xc9, 0xc1, 0x83, 0xad, 0x88, 0xb0, 0x08
+];
+
+const TARGET_PAY_8_HASH: [u8; 32] = [
+    0x3f, 0xcb, 0xc8, 0xbf, 0x23, 0xe8, 0x40, 0x07, 0x5d, 0xd8, 0x96, 0x4a, 0xbf, 0xee, 0xa1, 0x68,
+    0x22, 0xf3, 0xaa, 0x3d, 0xd3, 0xc4, 0x57, 0x97, 0xe0, 0xaf, 0xa8, 0x97, 0x55, 0x20, 0x13, 0x9c
+];
+
+const TARGET_UNLIMITED_HASH: [u8; 32] = [
+    0x14, 0x3f, 0xfa, 0xff, 0x54, 0x5c, 0xa6, 0x13, 0x6f, 0x7a, 0xc6, 0x70, 0x98, 0xd4, 0x62, 0xdc,
+    0xb7, 0x6d, 0xcb, 0x05, 0xb9, 0xb6, 0x57, 0xf6, 0x90, 0x92, 0x3b, 0x6e, 0xe8, 0x3b, 0xd9, 0x0e
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Device { Cpu, Gpu, Hybrid }
 
 pub struct McnnModel {
     router_w1: Vec<f32>, router_b1: Vec<f32>, router_w2: Vec<f32>, pub router_b2: Vec<f32>,
-    pub bit_keys: Vec<[u8; 64]>, #[allow(dead_code)] pub worker_limit: usize, pub has_avx2: bool,
+    pub bit_keys: Vec<[u8; 64]>, pub worker_limit: usize, pub has_avx2: bool,
     #[cfg(feature = "cuda")]
     pub cuda_device: Option<Arc<CudaDevice>>,
     #[cfg(feature = "cuda")]
@@ -36,20 +65,41 @@ struct GpuWeights {
 }
 
 impl McnnModel {
-    pub fn load(path: &str, _device_type: Device) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(path: &str, device_type: Device) -> Result<Self, Box<dyn std::error::Error>> {
         let mut file = File::open(path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
 
-        let data_part = if buffer.len() > 32 {
-            &buffer[..buffer.len() - 32]
-        } else {
-            &buffer
-        };
+        if buffer.len() < 32 { return Err("Model file too small (missing signature)".into()); }
+        let (data_part, signature_part) = buffer.split_at(buffer.len() - 32);
 
         let tensors = SafeTensors::deserialize(data_part)?;
         let bit_keys = Self::load_bit_keys(&tensors);
-        let worker_limit = 9999;
+
+        // --- NEURAL DNA VERIFICATION (The Sentinel) ---
+        let sentinel_key = bit_keys[0];
+        let mut sentinel_response = [0u8; 64];
+        for i in 0..64 { sentinel_response[i] = CHALLENGE[i] ^ sentinel_key[i]; }
+        
+        let hmac_key = Sha256::digest(sentinel_response);
+        let mut mac = Hmac::<Sha256>::new_from_slice(&hmac_key)?;
+        mac.update(data_part);
+        if mac.verify_slice(signature_part).is_err() {
+            return Err("Neural DNA Mismatch! Unauthorized model tampering detected.".into());
+        }
+
+        let resp_hash = Sha256::digest(sentinel_response);
+        let worker_limit = if resp_hash.as_slice() == TARGET_UNLIMITED_HASH {
+            9999 
+        } else if resp_hash.as_slice() == TARGET_PAY_8_HASH {
+            8
+        } else if resp_hash.as_slice() == TARGET_PAY_4_HASH {
+            4
+        } else if resp_hash.as_slice() == TARGET_FREE_2_HASH {
+            2    
+        } else {
+            return Err("Invalid License DNA. Please check your regulatory weights.".into());
+        };
 
         let to_vec = |name: &str| -> Vec<f32> {
             let view = tensors.tensor(name).unwrap();
@@ -67,7 +117,7 @@ impl McnnModel {
         let mut gpu_weights = None;
         
         #[cfg(feature = "cuda")]
-        if let Device::Gpu | Device::Hybrid = _device_type {
+        if let Device::Gpu | Device::Hybrid = device_type {
             if let Ok(dev) = CudaDevice::new(0) {
                 if dev.load_ptx(Ptx::from_src(PTX), "airdb", &["forward_router_batch", "reconstruct_batch"]).is_ok() {
                     let w1_gpu = dev.htod_copy(router_w1.clone())?;

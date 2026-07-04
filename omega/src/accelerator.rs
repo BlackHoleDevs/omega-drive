@@ -16,15 +16,15 @@ struct WsAction {
 type TopicRegistry = Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>;
 
 lazy_static::lazy_static! {
-    // Global distribution channels registry (Pub/Sub)
+    // Globalny rejestr kanałów dystrybucyjnych (Pub/Sub)
     static ref TOPIC_REGISTRY: TopicRegistry = Arc::new(DashMap::new());
 }
 
-// Function capturing data from the main OmegaDrive database
+// Funkcja przechwytująca dane z głównej bazy OmegaDrive
 pub fn broadcast_update(key: &str, payload: &[u8]) {
-    // If anyone is listening to the given key, immediately broadcast the payload!
+    // Jeśli ktokolwiek słucha danego klucza, natychmiast wrzucamy payload w eter!
     if let Some(sender) = TOPIC_REGISTRY.get(key) {
-        let _ = sender.send(payload.to_vec()); // Instant non-blocking broadcast
+        let _ = sender.send(payload.to_vec()); // Błyskawiczny non-blocking broadcast
     }
 }
 
@@ -50,38 +50,38 @@ pub fn start_websocket_server(port: u16, num_workers: usize) {
 }
 
 async fn handle_connection(raw_stream: TcpStream) {
-    // Handshake phase with a new browser client
+    // Faza Handshake z nowym klientem przeglądarkowym
     let ws_stream = match accept_async(raw_stream).await {
         Ok(ws) => ws,
-        Err(_) => return, // Client rejected / bad protocol
+        Err(_) => return, // Klient odrzucony / zły protokół
     };
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     
-    // MPSC used to consolidate traffic from different channels (keys) into 1 WebSocket socket
+    // MPSC używane żeby skondensować ruch z różnych kanałów (keys) do 1 gniazda WebSocket
     let (client_tx, mut client_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
     
-    // Pusher Thread: Sends messages from MPSC directly to the client's Socket
+    // Wątek-Niszczyciel (Pusher): Przesyła wiadomości z MPSC bezpośrednio do Socketu klienta
     tokio::spawn(async move {
         while let Some(msg) = client_rx.recv().await {
-            // If the client disconnects, send() will return Err and the sending process will close silently in the background (Zero memory leak)
+            // Jeśli klient się rozłączy, send() zwróci Err i proces wysyłający zamknie się cicho w tle (Zero memory leak)
             if ws_sender.send(Message::Binary(msg)).await.is_err() {
                 break;
             }
         }
     });
 
-    // Remember what the client is already subscribing to within 1 connection
+    // Pamiętamy co klient już subskrybuje w ramach 1 połączenia
     let mut active_subs = std::collections::HashSet::new();
 
-    // Loop reading JSON commands from the WebSocket (Industry Standard)
+    // Pętla odczytu komend JSON z WebSocketu (Industry Standard)
     while let Some(msg) = ws_receiver.next().await {
         if let Ok(Message::Text(text)) = msg {
             if let Ok(req) = serde_json::from_str::<WsAction>(&text) {
                 if req.action == "subscribe" && !active_subs.contains(&req.key) {
                     active_subs.insert(req.key.clone());
                     
-                    // Find channel for key or create a new one (buffer for 10k messages per channel!)
+                    // Znajdź kanał dla klucza lub stwórz nowy (bufor na 10k wiadomości na kanał!)
                     let tx = TOPIC_REGISTRY.entry(req.key.clone()).or_insert_with(|| {
                         let (tx, _) = broadcast::channel(10000);
                         tx
@@ -90,28 +90,28 @@ async fn handle_connection(raw_stream: TcpStream) {
                     let mut rx = tx.subscribe();
                     let client_tx_clone = client_tx.clone();
                     
-                    // Independent Subscriber Thread: Listens to global messages from Omega and pushes them into the client's pipeline
+                    // Niezależny Wątek Subskrybenta: Nasłuchuje na globalne krzyki z Omegi i wrzuca do rury klienta
                     tokio::spawn(async move {
                         loop {
                             match rx.recv().await {
                                 Ok(msg) => {
                                     if client_tx_clone.send(msg).await.is_err() {
-                                        break; // Client disconnected, killing thread
+                                        break; // Klient uciekł, zabijamy wątek
                                     }
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                    // Web browser cannot keep up reading at Omega's speed!
-                                    // Loses packets, but we CANNOT close the connection - continue.
+                                    // Przeglądarka internetowa nie nadąża czytać z prędkością Omegi!
+                                    // Gubi pakiety, ale NIE możemy zamykać połączenia - kontynuujemy.
                                     continue;
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                    break; // Channel destroyed
+                                    break; // Kanał zniszczony
                                 }
                             }
                         }
                     });
                     
-                    // Subscription confirmation for frontend
+                    // Potwierdzenie podłączenia dla Frontendowca
                     let ack = format!("{{\"status\":\"subscribed\",\"key\":\"{}\"}}", req.key);
                     let _ = client_tx.send(ack.into_bytes()).await;
                 }

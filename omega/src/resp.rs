@@ -17,6 +17,8 @@ pub enum Command<'a> {
     HmSet(&'a str, Vec<(&'a str, &'a [u8])>),
     HGetAll(&'a str),
     ZAdd(&'a str),
+    VAdd(&'a str, Vec<f32>),
+    VSearch(usize, Vec<f32>),
     Unknown(&'a str),
 }
 
@@ -110,6 +112,42 @@ pub fn parse_command_fast(buf: &[u8]) -> Option<(Command<'_>, usize)> {
             let (key, len) = parse_bulk_str(buf, pos)?;
             pos += len;
             Command::ZAdd(str::from_utf8(key).ok()?)
+        }
+        "VADD" => {
+            if num_args < 3 { return None; }
+            let (key, len) = parse_bulk_str(buf, pos)?;
+            pos += len;
+            let num_floats = num_args as usize - 2;
+            let mut floats = Vec::with_capacity(num_floats);
+            let mut current_pos = pos;
+            for _ in 0..num_floats {
+                let (f_bytes, len) = parse_bulk_str(buf, current_pos)?;
+                current_pos += len;
+                let f_str = str::from_utf8(f_bytes).ok()?;
+                let f_val = f_str.parse::<f32>().ok()?;
+                floats.push(f_val);
+            }
+            pos = current_pos;
+            Command::VAdd(str::from_utf8(key).ok()?, floats)
+        }
+        "VSEARCH" => {
+            if num_args < 3 { return None; }
+            let (k_bytes, len) = parse_bulk_str(buf, pos)?;
+            pos += len;
+            let k_str = str::from_utf8(k_bytes).ok()?;
+            let k = k_str.parse::<usize>().ok()?;
+            let num_floats = num_args as usize - 2;
+            let mut floats = Vec::with_capacity(num_floats);
+            let mut current_pos = pos;
+            for _ in 0..num_floats {
+                let (f_bytes, len) = parse_bulk_str(buf, current_pos)?;
+                current_pos += len;
+                let f_str = str::from_utf8(f_bytes).ok()?;
+                let f_val = f_str.parse::<f32>().ok()?;
+                floats.push(f_val);
+            }
+            pos = current_pos;
+            Command::VSearch(k, floats)
         }
         _ => Command::Unknown(cmd_name),
     };
