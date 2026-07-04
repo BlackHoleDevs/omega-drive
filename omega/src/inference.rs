@@ -10,11 +10,13 @@ use std::arch::x86_64::*;
 use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
+#[cfg(feature = "cuda")]
 use std::sync::Arc;
 
 use hmac::{Hmac, Mac, KeyInit};
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "cuda")]
 const PTX: &str = include_str!("airdb_kernel.ptx");
 
 // THE INAUGURATION CHALLENGE (Secret DNA of OmegaDrive)
@@ -66,6 +68,9 @@ struct GpuWeights {
 
 impl McnnModel {
     pub fn load(path: &str, device_type: Device) -> Result<Self, Box<dyn std::error::Error>> {
+        #[cfg(not(feature = "cuda"))]
+        let _ = device_type;
+
         let mut file = File::open(path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;

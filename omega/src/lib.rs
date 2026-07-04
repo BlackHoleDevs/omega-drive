@@ -2,6 +2,8 @@
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::types::{PyBytes, PyList};
+#[cfg(feature = "python")]
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use lazy_static::lazy_static;
