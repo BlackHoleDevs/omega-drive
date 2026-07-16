@@ -44,6 +44,7 @@ libc = "0.2"
 chacha20 = "0.9.1"
 image = { version = "0.24", default-features = false, features = ["jpeg", "png"] }
 webp = "0.2"
+rusttype = "0.9"
 pyo3 = { version = "0.21", features = ["extension-module"], optional = true }
 
 
