@@ -5,6 +5,7 @@ mod accelerator;
 mod hash_engine;
 mod vector_store;
 mod ws_opt;
+mod persistence_neural;
 use dashmap::DashMap;
 use inference::{McnnModel, Device};
 use resp::{Command, parse_command_fast, make_pong, make_int, make_bulk_string};
@@ -19,7 +20,6 @@ use clap::Parser;
 use socket2::{Socket, Domain, Type, Protocol, SockAddr};
 use std::net::SocketAddr;
 use std::fs;
-use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -175,25 +175,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- AOF Startup Replay ---
+    let aof_file = "omegadrive.aof";
+    if std::path::Path::new(aof_file).exists() {
+        println!("💾 Replaying Append-Only File (AOF) from {}...", aof_file);
+        if let Ok(mut file) = fs::File::open(aof_file) {
+            use std::io::Read;
+            let mut data = Vec::new();
+            if file.read_to_end(&mut data).is_ok() {
+                let mut pos = 0;
+                let mut count = 0;
+                while pos < data.len() {
+                    if data[pos] == b'*' {
+                        if let Some((cmd, consumed)) = parse_command_fast(&data[pos..]) {
+                            match cmd {
+                                Command::Set(key, value) => {
+                                    let (best_idx, chunks) = model_base.forward_cascade(value);
+                                    let nv = if chunks.len() == 1 {
+                                        NeuralValue::Single { best_idx: best_idx as u16, data: ChunkData(chunks[0]), len: value.len() }
+                                    } else {
+                                        NeuralValue::Multi { original_len: value.len(), best_idx: best_idx as u16, chunks: chunks.into_iter().map(ChunkData).collect() }
+                                    };
+                                    global_db.insert(AirKey::from_bytes(key.as_bytes()), nv);
+                                }
+                                Command::Del(key) => {
+                                    global_db.remove(&AirKey::from_bytes(key.as_bytes()));
+                                }
+                                Command::VAdd(key, floats) => {
+                                    let bit_vec = vector_db.quantize(&floats);
+                                    vector_db.add(AirKey::from_bytes(key.as_bytes()), bit_vec, floats);
+                                }
+                                Command::FlushDb => {
+                                    global_db.clear();
+                                    vector_db.clear();
+                                }
+                                Command::HmSet(key, fields) => {
+                                    let key_obj = AirKey::from_bytes(key.as_bytes());
+                                    let new_buf = if let Some(entry) = global_db.get_mut(&key_obj) {
+                                        let old_val = entry.value();
+                                        match old_val {
+                                            NeuralValue::FlatHash(old_buf) => {
+                                                hash_engine::FlatHash::merge(old_buf, &fields)
+                                            }
+                                            _ => {
+                                                hash_engine::FlatHash::serialize(&fields)
+                                            }
+                                        }
+                                    } else {
+                                        hash_engine::FlatHash::serialize(&fields)
+                                    };
+                                    global_db.insert(key_obj, NeuralValue::FlatHash(new_buf));
+                                }
+                                _ => {}
+                            }
+                            pos += consumed;
+                            count += 1;
+                        } else {
+                            pos += 1;
+                        }
+                    } else {
+                        pos += 1;
+                    }
+                }
+                println!("✅ AOF replay completed. Loaded {} commands into memory.", count);
+            }
+        }
+    }
+
     if args.statistics {
         crate::telemetry::spawn_telemetry_thread(Arc::clone(&global_db));
     }
 
     crate::accelerator::start_websocket_server(args.ws_port, num_workers);
 
-    if let Some(hours) = args.hdd {
-        let hdd_db = Arc::clone(&global_db);
-        let dump_path = dump_file.to_string();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(hours * 3600));
-            println!("💾 [PERSISTENCE] Initiating HDD Snapshot...");
-            let mut snapshot = Vec::with_capacity(hdd_db.len());
-            for entry in hdd_db.iter() { snapshot.push((entry.key().clone(), entry.value().clone())); }
-            if let Ok(encoded) = bincode::serialize(&snapshot) {
-                if fs::write(&dump_path, encoded).is_ok() {
-                    println!("✅ [PERSISTENCE] Successfully saved {} keys to {}.", snapshot.len(), dump_path);
-                } else { println!("❌ [PERSISTENCE] Failed to write {} to disk.", dump_path); }
-            }
+    // Initialize Channels and NPC persistence thread
+    let mut persistence_tx = None;
+    if args.hdd.is_some() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        persistence_tx = Some(tx);
+        let aof_path = "omegadrive.aof".to_string();
+        std::thread::spawn(move || {
+            crate::persistence_neural::run_persistence_worker(rx, aof_path);
         });
     }
 
@@ -205,6 +267,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uds_listener_clone = Arc::clone(&uds_listener_base);
         let db = Arc::clone(&global_db);
         let vector_db_clone = Arc::clone(&vector_db);
+        let tx_clone = persistence_tx.clone();
         
         threads.push(std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -231,12 +294,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let db_for_tcp = Arc::clone(&db);
                 let model_for_tcp = Arc::clone(&model);
                 let vector_db_for_tcp = Arc::clone(&vector_db_clone);
+                let tx_for_tcp = tx_clone.clone();
 
                 #[cfg(unix)]
                 {
                     let db_for_uds = Arc::clone(&db);
                     let model_for_uds = Arc::clone(&model);
                     let vector_db_for_uds = Arc::clone(&vector_db_clone);
+                    let tx_for_uds = tx_clone.clone();
 
                     tokio::spawn(async move {
                         loop {
@@ -244,8 +309,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let local_db = Arc::clone(&db_for_uds);
                                 let local_model = Arc::clone(&model_for_uds);
                                 let local_vector_db = Arc::clone(&vector_db_for_uds);
+                                let tx_local = tx_for_uds.clone();
                                 tokio::spawn(async move {
-                                    let _ = handle_connection(s, local_db, local_model, local_vector_db).await;
+                                    let _ = handle_connection(s, local_db, local_model, local_vector_db, tx_local).await;
                                 });
                             }
                         }
@@ -258,8 +324,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let local_db = Arc::clone(&db_for_tcp);
                         let local_model = Arc::clone(&model_for_tcp);
                         let local_vector_db = Arc::clone(&vector_db_for_tcp);
+                        let tx_local = tx_for_tcp.clone();
                         tokio::spawn(async move {
-                            let _ = handle_connection(s, local_db, local_model, local_vector_db).await;
+                            let _ = handle_connection(s, local_db, local_model, local_vector_db, tx_local).await;
                         });
                     }
                 }
@@ -271,11 +338,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_connection<S>(mut socket: S, db: Arc<DashMap<AirKey, NeuralValue, fxhash::FxBuildHasher>>, model: Arc<McnnModel>, vector_db: Arc<crate::vector_store::SharedVectorStore>) -> Result<(), Box<dyn std::error::Error>> 
+async fn handle_connection<S>(
+    mut socket: S, 
+    db: Arc<DashMap<AirKey, NeuralValue, fxhash::FxBuildHasher>>, 
+    model: Arc<McnnModel>, 
+    vector_db: Arc<crate::vector_store::SharedVectorStore>,
+    persistence_tx: Option<std::sync::mpsc::Sender<crate::persistence_neural::PersistenceCommand>>
+) -> Result<(), Box<dyn std::error::Error>> 
 where S: AsyncReadExt + AsyncWriteExt + Unpin 
 {
-    let mut read_buffer = BytesMut::with_capacity(1024 * 1024 * 1024); // 1GB Buffer for Massive Blobs
-    let mut write_buffer = BytesMut::with_capacity(1024 * 1024 * 1024);
+    let mut read_buffer = BytesMut::with_capacity(65536); // Dynamically grows if needed
+    let mut write_buffer = BytesMut::with_capacity(65536);
 
     let is_lite = model.worker_limit <= 2;
     let mut tokens: f64 = 2000.0;
@@ -313,6 +386,12 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                             };
                             db.insert(AirKey::from_bytes(key.as_bytes()), nv);
                             crate::accelerator::broadcast_update(key, value);
+
+                            // Send mutating command to persistence queue asynchronously
+                            if let Some(tx) = &persistence_tx {
+                                let _ = tx.send(crate::persistence_neural::PersistenceCommand::Set(key.to_string(), value.to_vec()));
+                            }
+
                             write_buffer.extend_from_slice(RESP_OK);
                             pos = current_pos;
                         }
@@ -339,6 +418,12 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                         }
                         Command::Del(key) => {
                             let count = if db.remove(&AirKey::from_bytes(key.as_bytes())).is_some() { 1 } else { 0 };
+
+                            // Send mutating command to persistence queue asynchronously
+                            if let Some(tx) = &persistence_tx {
+                                let _ = tx.send(crate::persistence_neural::PersistenceCommand::Del(key.to_string()));
+                            }
+
                             write_buffer.extend_from_slice(&make_int(count));
                             pos = current_pos;
                         }
@@ -348,7 +433,18 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                             pos = current_pos;
                         }
                         Command::Select(_) => { write_buffer.extend_from_slice(RESP_OK); pos = current_pos; }
-                        Command::FlushDb => { db.clear(); write_buffer.extend_from_slice(RESP_OK); pos = current_pos; }
+                        Command::FlushDb => { 
+                            db.clear(); 
+                            vector_db.clear();
+
+                            // Send mutating command to persistence queue asynchronously
+                            if let Some(tx) = &persistence_tx {
+                                let _ = tx.send(crate::persistence_neural::PersistenceCommand::FlushDb);
+                            }
+
+                            write_buffer.extend_from_slice(RESP_OK); 
+                            pos = current_pos; 
+                        }
                         Command::Info => {
                             let info = "redis_version:3.0.0\r\nomega_drive_version:3.0.0\r\nrole:master\r\n";
                             write_buffer.extend_from_slice(&make_bulk_string(info.as_bytes()));
@@ -379,6 +475,11 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                                     db.insert(AirKey::from_bytes(key_raw), nv);
                                     if let Ok(key_str) = std::str::from_utf8(key_raw) {
                                         crate::accelerator::broadcast_update(key_str, val);
+
+                                        // Send to persistence queue asynchronously
+                                        if let Some(tx) = &persistence_tx {
+                                            let _ = tx.send(crate::persistence_neural::PersistenceCommand::Set(key_str.to_string(), val.to_vec()));
+                                        }
                                     }
                                 }
                                 write_buffer.extend_from_slice(RESP_OK); pos = temp_pos;
@@ -430,6 +531,13 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                                 hash_engine::FlatHash::serialize(&fields)
                             };
                             db.insert(key_obj, NeuralValue::FlatHash(new_buf));
+
+                            // Send to persistence queue asynchronously
+                            if let Some(tx) = &persistence_tx {
+                                let fields_vec = fields.iter().map(|(k, v)| (k.to_string(), v.to_vec())).collect::<Vec<_>>();
+                                let _ = tx.send(crate::persistence_neural::PersistenceCommand::HmSet(key.to_string(), fields_vec));
+                            }
+
                             write_buffer.extend_from_slice(RESP_OK);
                             pos = current_pos;
                         }
@@ -455,7 +563,13 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                         }
                         Command::VAdd(key, floats) => {
                             let bit_vec = vector_db.quantize(&floats);
-                            vector_db.add(AirKey::from_bytes(key.as_bytes()), bit_vec, floats);
+                            vector_db.add(AirKey::from_bytes(key.as_bytes()), bit_vec, floats.clone());
+
+                            // Send to persistence queue asynchronously
+                            if let Some(tx) = &persistence_tx {
+                                let _ = tx.send(crate::persistence_neural::PersistenceCommand::VAdd(key.to_string(), floats));
+                            }
+
                             write_buffer.extend_from_slice(RESP_OK);
                             pos = current_pos;
                         }
@@ -475,6 +589,7 @@ where S: AsyncReadExt + AsyncWriteExt + Unpin
                             }
                             pos = current_pos;
                         }
+
                         Command::Unknown(_) => {
                             // Some clients send 'COMMAND' - we return an empty array to indicate compatibility
                             write_buffer.extend_from_slice(b"*0\r\n");
