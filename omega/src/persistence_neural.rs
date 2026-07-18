@@ -188,7 +188,7 @@ fn pin_thread_to_core(core_id: usize) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn pin_thread_to_core(core_id: usize) {
+fn pin_thread_to_core(_core_id: usize) {
     println!("📍 [NPC] Core pinning not supported on this OS. Running standard thread.");
 }
 

@@ -13,6 +13,7 @@ struct WsAction {
     key: String,
 }
 
+#[allow(dead_code)]
 type TopicRegistry = Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>;
 
 lazy_static::lazy_static! {
